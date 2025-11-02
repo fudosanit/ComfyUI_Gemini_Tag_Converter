@@ -1,13 +1,12 @@
 # __init__.py
 
-# python -m pip install google-genai (requirements.txtで自動インストールされます)
 from google import genai
 import os # 環境変数からキーを取得する場合などのために
 
 class JapaneseToDanbooruTags:
     """
     Gemini APIを使用して、任意の言語のテキストを英語のDanbooruタグ形式に変換するComfyUIカスタムノード。
-    APIキーはノードUIから入力できます。
+    APIキーやシステムプロンプトはノードUIから入力できます。
     """
     
     def __init__(self):
@@ -20,21 +19,25 @@ class JapaneseToDanbooruTags:
 
     @classmethod
     def INPUT_TYPES(s):
-        """ノードの入力（UIに表示される項目）を定義"""
+        """ノードの入力（UIに表示される必須項目とオプション項目）を定義"""
         return {
             "required": {
-                # APIキーの入力フィールド。セキュリティ上、手動入力か環境変数が推奨される。
+                # APIキーの入力フィールド
                 "gemini_api_key": ("STRING", {"multiline": False, "default": "", "placeholder": "Your Gemini API Key"}),
                 
                 # 任意の言語のテキストを受け入れる入力フィールド
                 "input_text": ("STRING", {"multiline": True, "default": "A beautiful girl under a cherry tree.", "placeholder": "説明テキストを入力 (日本語、英語など)"}),
                 
-                # 言語選択のドロップダウンを追加
+                # 言語選択のドロップダウン
                 "input_language": (["Japanese", "English", "Chinese", "Korean", "Auto Detect"], {"default": "Auto Detect"}),
                 
                 # 使用するモデル名
                 "model_name": ("STRING", {"default": "gemini-2.5-flash"}),
             },
+            "optional": {
+                # オプションのシステムプロンプト入力フィールド
+                "system_prompt_override": ("STRING", {"multiline": True, "default": "", "placeholder": "カスタムシステムプロンプト (任意)"}),
+            }
         }
 
     # ノードの表示名とカテゴリ
@@ -45,27 +48,37 @@ class JapaneseToDanbooruTags:
     RETURN_TYPES = ("STRING",)
     RETURN_NAMES = ("danbooru_tags",)
 
-    def execute(self, gemini_api_key, input_text, input_language, model_name):
+    # system_prompt_override をオプション引数として受け取る
+    def execute(self, gemini_api_key, input_text, input_language, model_name, system_prompt_override=""):
         """ノードのメイン処理"""
         
         if not gemini_api_key:
-            # キーがない場合はエラーを発生させる
             raise ValueError("Gemini API Keyが入力されていません。ノードの入力フィールドを確認してください。")
 
-        # 1. 言語情報を含む動的なシステムプロンプトの作成
-        if input_language == "Auto Detect":
-            system_prompt = (
-                "あなたは、画像生成AIのためのプロンプトを生成するエキスパートです。"
-                "与えられた文章を、カンマ区切りの英語のdanbooruタグ形式のプロンプトに変換してください。"
-                "元の文章の言語を自動で検出し、正確に英語タグに変換してください。"
-                "出力はタグのみとし、それ以外の説明や前置き、後書きは一切含めないでください。"
-            )
+        # =======================================================
+        # 1. system_prompt の決定ロジック
+        # =======================================================
+        if system_prompt_override.strip():
+            # ユーザーがカスタムプロンプトを設定した場合、それを使用
+            final_system_prompt = system_prompt_override.strip()
+            print("[GeminiTagNode] Custom System Promptを使用します。")
         else:
-            system_prompt = (
-                f"あなたは、{input_language}で書かれた文章を画像生成AIのためのプロンプトに変換するエキスパートです。"
-                "与えられた文章を、カンマ区切りの英語のdanbooruタグ形式のプロンプトに変換してください。"
-                "出力はタグのみとし、それ以外の説明や前置き、後書きは一切含めないでください。"
-            )
+            # カスタムプロンプトがない場合、従来のデフォルトプロンプトを動的に生成
+            if input_language == "Auto Detect":
+                final_system_prompt = (
+                    "あなたは、画像生成AIのためのプロンプトを生成するエキスパートです。"
+                    "与えられた文章を、カンマ区切りの英語のdanbooruタグ形式のプロンプトに変換してください。"
+                    "元の文章の言語を自動で検出し、正確に英語タグに変換してください。"
+                    "出力はタグのみとし、それ以外の説明や前置き、後書きは一切含めないでください。"
+                )
+            else:
+                final_system_prompt = (
+                    f"あなたは、{input_language}で書かれた文章を画像生成AIのためのプロンプトに変換するエキスパートです。"
+                    "与えられた文章を、カンマ区切りの英語のdanbooruタグ形式のプロンプトに変換してください。"
+                    "出力はタグのみとし、それ以外の説明や前置き、後書きは一切含めないでください。"
+                )
+            print(f"[GeminiTagNode] Default System Prompt (言語: {input_language}) を使用します。")
+
 
         try:
             # 2. Gemini Clientの初期化
@@ -75,13 +88,14 @@ class JapaneseToDanbooruTags:
             response = client.models.generate_content(
                 model=model_name,
                 contents=input_text,
-                config={"system_instruction": system_prompt}
+                # 決定された final_system_prompt を使用
+                config={"system_instruction": final_system_prompt}
             )
             
             # 4. 結果の整形と返却
             tags = response.text.strip()
             
-            print(f"[GeminiTagNode] 変換言語: {input_language}, 結果: {tags}")
+            print(f"[GeminiTagNode] 変換結果: {tags}")
             
             # ComfyUIのノードは結果をタプルで返します
             return (tags,)
@@ -90,7 +104,7 @@ class JapaneseToDanbooruTags:
             # APIエラーや接続エラーが発生した場合
             error_message = f"[GeminiTagNode ERROR]: API呼び出し中にエラーが発生しました: {e}"
             print(error_message)
-            # エラーをノード出力としてではなく、実行を中断する方が良いことが多い
+            # エラーを発生させてノード実行を中断
             raise RuntimeError(error_message)
 
 
